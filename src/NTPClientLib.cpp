@@ -25,10 +25,6 @@ The views and conclusions contained in the software and documentation are those 
 authors and should not be interpreted as representing official policies, either expressed
 or implied, of German Martin
 */
-//
-//
-//
-
 #include "NtpClientLib.h"
 
 #define DBG_PORT Serial
@@ -171,10 +167,6 @@ time_t NTPClient::getTime () {
                 onSyncEvent (timeSyncd);
             return timeValue;
         }
-#ifdef ARDUINO_ARCH_ESP8266
-        ESP.wdtFeed ();
-        yield ();
-#endif
     }
     DEBUGLOG ("-- No NTP Response :-(\n");
     udp->stop ();
@@ -186,61 +178,102 @@ time_t NTPClient::getTime () {
     return 0; // return 0 if unable to get the time
 }
 #elif NETWORK_TYPE == NETWORK_ESP8266 || NETWORK_TYPE == NETWORK_ESP32
-time_t NTPClient::getTime () {
-    IPAddress timeServerIP; //NTP server IP address
-                            //char ntpPacketBuffer[NTP_PACKET_SIZE]; //Buffer to store response message
-    DEBUGLOG ("Starting UDP\n");
-    int error = WiFi.hostByName (getNtpServerName ().c_str (), timeServerIP);
-    if (error) {
-        DEBUGLOG ("Starting UDP. IP: %s\n", timeServerIP.toString ().c_str ());
-        if (udp->connect (timeServerIP, DEFAULT_NTP_PORT)) {
-            udp->onPacket (std::bind (&NTPClient::processPacket, this, _1));
-            DEBUGLOG ("Sending UDP packet\n");
-            if (sendNTPpacket (udp)) {
-                DEBUGLOG ("NTP request sent\n");
-                status = requested;
-                responseTimer.once_ms (ntpTimeout, &NTPClient::s_processRequestTimeout, static_cast<void*>(this));
-                /*timer1_attachInterrupt (s_processRequestTimeout);
-                timer1_enable (TIM_DIV256, TIM_EDGE, TIM_SINGLE);
-                timer1_write ((uint32_t)(312.5*ntpTimeout));*/
-                if (onSyncEvent)
-                    onSyncEvent (requestSent);
-                return 0;
-            } else {
-                DEBUGLOG ("NTP request error\n");
-                if (onSyncEvent)
-                    onSyncEvent (errorSending);
-                return 0;
-            }
-        } else {
+
+void NTPClient::async_getTime (const ip_addr_t *ipaddr) {
+    DEBUGLOG ("Trying to connect to NTP server\n");
+
+    // XXX broken on esp32: if called inside dns_found_callback, udp must use lwip methods directly
+#if NETWORK_TYPE == NETWORK_ESP32
+    if (ipaddr->type == IPADDR_TYPE_V4) {
+        DEBUGLOG ("using ip4: %s\n", ip4addr_ntoa(&(ipaddr->u_addr.ip4)));
+    }
+    if (ipaddr->type == IPADDR_TYPE_V6) {
+        DEBUGLOG ("using ip6: %s\n", ip6addr_ntoa(&(ipaddr->u_addr.ip6)));
+    }
+    if (udp->connect (ipaddr, DEFAULT_NTP_PORT)) {
+#else
+    if (udp->connect (IPAddress(ipaddr->addr), DEFAULT_NTP_PORT)) {
+#endif
+        udp->onPacket (std::bind (&NTPClient::processPacket, this, std::placeholders::_1));
+        DEBUGLOG ("Sending UDP packet\n");
+        status = requested;
+        if (sendNTPpacket (udp)) {
+            DEBUGLOG ("NTP request sent\n");
+            responseTimer.once_ms (ntpTimeout, &NTPClient::s_processRequestTimeout, static_cast<void*>(this));
             if (onSyncEvent)
-                onSyncEvent (noResponse);
-            return 0; // return 0 if unable to get the time
+                onSyncEvent (requestSent);
+        } else {
+            DEBUGLOG ("NTP request error\n");
+            if (onSyncEvent)
+                onSyncEvent (errorSending);
         }
     } else {
-        DEBUGLOG ("HostByName error %d\n", error);
+        DEBUGLOG ("NTP no response\n");
         if (onSyncEvent)
-            onSyncEvent (invalidAddress);
-        return 0; // return 0 if unable to get the time
+            onSyncEvent (noResponse);
+    }
+}
+
+#if LWIP_VERSION_MAJOR == 2 || defined(ARDUINO_ARCH_ESP32)
+void NTPClient::_dns_found_cb (const char *name, const ip_addr_t *ipaddr, void *arg) {
+#else
+void NTPClient::_dns_found_cb (const char *name, ip_addr_t *ipaddr, void *arg) {
+#endif
+    DEBUGLOG ("_dns_found_cb: %s\n", name);
+    NTPClient *c = reinterpret_cast<NTPClient*>(arg);
+
+    if (!ipaddr) {
+        DEBUGLOG ("_dns_found_cb no ipaddr\n");
+        if (c->onSyncEvent)
+            c->onSyncEvent (invalidAddress);
+        return;
     }
 
+    // TODO this just hangs the process!
+    // dns is cached, next loop will resolve time
+    c->async_getTime (ipaddr);
+}
+
+
+// Wait for callbacks to call setTime
+// This never returns actual time value
+time_t NTPClient::getTime () {
+    ip_addr_t timeServerIP;
+    err_t error = dns_gethostbyname (getNtpServerName ().c_str (), &timeServerIP, (dns_found_callback)&_dns_found_cb, this);
+    if (error == ERR_OK) {
+        DEBUGLOG ("gethostbyname resolution OK\n");
+        async_getTime(&timeServerIP);
+        return 0;
+    } else if (error == ERR_INPROGRESS) {
+        DEBUGLOG ("gethostbyname is in progress\n");
+        return 0;
+    } else {
+        if (onSyncEvent)
+            onSyncEvent (invalidAddress);
+        #ifdef LWIP_DEBUG
+        DEBUGLOG ("gethostbyname error: %s\n", lwip_strerr(error));
+        #endif
+    }
+
+    return 0;
 }
 
 void dumpNTPPacket (byte *data, size_t length) {
     //byte *data = packet.data ();
     //size_t length = packet.length ();
 
-    for (size_t i = 0; i < length; i++) {
-        DEBUGLOG ("%02X ", data[i]);
-        if ((i + 1) % 16 == 0) {
-            DEBUGLOG ("\n");
-        } else if ((i + 1) % 4 == 0) {
-            DEBUGLOG ("| ");
-        }
-    }
+//    for (size_t i = 0; i < length; i++) {
+//        DEBUGLOG ("%02X ", data[i]);
+//        if ((i + 1) % 16 == 0) {
+//            DEBUGLOG ("\n");
+//        } else if ((i + 1) % 4 == 0) {
+//            DEBUGLOG ("| ");
+//        }
+//    }
 }
 
 boolean NTPClient::sendNTPpacket (AsyncUDP *udp) {
+    DEBUGLOG ("sendNTPpacket\n");
     AsyncUDPMessage ntpPacket = AsyncUDPMessage ();
 
     uint8_t ntpPacketBuffer[NTP_PACKET_SIZE]; //Buffer to store request message
@@ -271,6 +304,7 @@ boolean NTPClient::sendNTPpacket (AsyncUDP *udp) {
 }
 
 void NTPClient::processPacket (AsyncUDPPacket packet) {
+    DEBUGLOG ("processPacket\n");
     uint8_t *ntpPacketBuffer;
     int size;
 
@@ -289,6 +323,7 @@ void NTPClient::processPacket (AsyncUDPPacket packet) {
                 _firstSync = timeValue;
             }
             setLastNTPSync (timeValue);
+
             DEBUGLOG ("Sync frequency set low\n");
             DEBUGLOG ("Successful NTP sync at %s\n", getTimeDateString (getLastNTPSync ()).c_str ());
 
@@ -331,7 +366,7 @@ void ICACHE_RAM_ATTR NTPClient::s_processRequestTimeout (void* arg) {
     NTPClient* self = reinterpret_cast<NTPClient*>(arg);
     self->processRequestTimeout ();
 }
-#endif
+#endif // NETWORK_TYPE == NETWORK_ESP8266 / NETWORK_ESP32
 
 int8_t NTPClient::getTimeZone () {
     return _timeZone;
@@ -458,24 +493,6 @@ void NTPClient::setDayLight (bool daylight) {
 
 bool NTPClient::getDayLight () {
     return _daylight;
-}
-
-String NTPClient::getTimeStr (time_t moment) {
-    char timeStr[10];
-    sprintf (timeStr, "%02d:%02d:%02d", hour (moment), minute (moment), second (moment));
-
-    return timeStr;
-}
-
-String NTPClient::getDateStr (time_t moment) {
-    char dateStr[12];
-    sprintf (dateStr, "%02d/%02d/%4d", day (moment), month (moment), year (moment));
-
-    return dateStr;
-}
-
-String NTPClient::getTimeDateString (time_t moment) {
-    return getTimeStr (moment) + " " + getDateStr (moment);
 }
 
 time_t NTPClient::getLastNTPSync () {

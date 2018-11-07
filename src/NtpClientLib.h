@@ -40,17 +40,8 @@ or implied, of German Martin
 
 //#define DEBUG_NTPCLIENT //Uncomment this to enable debug messages over serial port
 
-#ifdef ESP8266
-//extern "C" {
-//#include "user_interface.h"
-//#include "sntp.h"
-//}
-#include <functional>
-using namespace std;
-using namespace placeholders;
-#endif
-
 #include <TimeLib.h>
+#include <DateStrings.cpp>
 
 #if defined(ARDUINO) && ARDUINO >= 100
 #include "Arduino.h"
@@ -64,12 +55,12 @@ using namespace placeholders;
 #define NETWORK_ESP8266			(100) // ESP8266 boards, not for Arduino using AT firmware
 #define NETWORK_ESP32           (101) // ESP32 boards
 
-#define DEFAULT_NTP_SERVER "pool.ntp.org" // Default international NTP server. I recommend you to select a closer server to get better accuracy
-#define DEFAULT_NTP_PORT 123 // Default local udp port. Select a different one if neccesary (usually not needed)
-#define DEFAULT_NTP_INTERVAL 1800 // Default sync interval 30 minutes
-#define DEFAULT_NTP_SHORTINTERVAL 15 // Sync interval when sync has not been achieved. 15 seconds
-#define DEFAULT_NTP_TIMEZONE 0 // Select your local time offset. 0 if UTC time has to be used
-#define MIN_NTP_TIMEOUT 100 // Minumum admisible ntp timeout
+#define DEFAULT_NTP_SERVER        "pool.ntp.org" // Default international NTP server. I recommend you to select a closer server to get better accuracy
+#define DEFAULT_NTP_PORT          123  // Default local udp port. Select a different one if neccesary (usually not needed)
+#define DEFAULT_NTP_INTERVAL      1800 // Default sync interval 30 minutes
+#define DEFAULT_NTP_SHORTINTERVAL 15   // Sync interval when sync has not been achieved. 15 seconds
+#define DEFAULT_NTP_TIMEZONE      0    // Select your local time offset. 0 if UTC time has to be used
+#define MIN_NTP_TIMEOUT           100  // Minimum admissible ntp timeout
 
 #define DST_ZONE_EU             (0)
 #define DST_ZONE_USA            (1)
@@ -84,7 +75,7 @@ const int NTP_PACKET_SIZE = 48; // NTP time is in the first 48 bytes of message
 #define NETWORK_TYPE NETWORK_WIFI101 // SET YOUR NETWORK INTERFACE
 #elif defined ARDUINO_ARCH_AVR
 #define NETWORK_TYPE NETWORK_W5100
-#elif defined ARDUINO_ARCH_ESP32 || defined ESP32
+#elif defined ARDUINO_ARCH_ESP32
 #define NETWORK_TYPE NETWORK_ESP32
 #endif
 
@@ -99,34 +90,46 @@ const int NTP_PACKET_SIZE = 48; // NTP time is in the first 48 bytes of message
 #include <WiFiUdp.h>
 #include <WiFi101.h>
 #elif NETWORK_TYPE == NETWORK_ESP8266
+#include <functional>
 #include <ESP8266WiFi.h>
 #include <ESPAsyncUDP.h>
 #include <Ticker.h>
 #elif NETWORK_TYPE == NETWORK_ESP32
+#include <functional>
 #include <WiFi.h>
-#include <ESPAsyncUDP.h>
+#include <AsyncUDP.h>
 #include <Ticker.h>
 #else
 #error "Incorrect platform. Only ARDUINO and ESP8266 MCUs are valid."
 #endif // NETWORK_TYPE
 
+#if ((NETWORK_TYPE == NETWORK_ESP32) || (NETWORK_TYPE == NETWORK_ESP8266))
+extern "C" {
+  #include "lwip/inet.h"    // ip_addr_t
+  #include "lwip/err.h"     // ERR_x
+  #include "lwip/dns.h"     // dns_gethostbyname
+  #include "lwip/ip_addr.h" // ip4/ip6 helpers
+  #include "lwip/init.h"    // LWIP_VERSION_MAJOR
+}
+#endif
+
 typedef enum {
-    timeSyncd = 0, // Time successfully got from NTP server
-    noResponse = -1, // No response from server
+    timeSyncd      = 0,  // Time successfully got from NTP server
+    noResponse     = -1, // No response from server
     invalidAddress = -2, // Address not reachable
 #if NETWORK_TYPE == NETWORK_ESP8266 || NETWORK_TYPE == NETWORK_ESP32
-    requestSent = 1, // NTP request sent, waiting for response
-    errorSending = -3, // An error happened while sending the request
-    responseError = -4, // Wrong response received
+    requestSent    = 1,  // NTP request sent, waiting for response
+    errorSending   = -3, // An error happened while sending the request
+    responseError  = -4, // Wrong response received
 #endif
 } NTPSyncEvent_t;
 
 #if NETWORK_TYPE == NETWORK_ESP8266 || NETWORK_TYPE == NETWORK_ESP32
 typedef enum {
-    syncd = 0, // Time synchronized correctly
-    unsyncd = -1, // Time may not be valid
-    requested = 1, // NTP request sent, waiting for response
-} NTPStatus_t; // Only for internal library use
+    syncd     = 0,  // Time synchronized correctly
+    unsyncd   = -1, // Time may not be valid
+    requested = 1,  // NTP request sent, waiting for response
+} NTPStatus_t;      // Only for internal library use
 #endif
 
 #if defined ARDUINO_ARCH_ESP8266 || defined ARDUINO_ARCH_ESP32
@@ -294,51 +297,6 @@ public:
     bool getDayLight ();
 
     /**
-    * Convert current time to a String.
-    * @param[out] String constructed from current time.
-    * TODO: Add internationalization support
-    */
-    String getTimeStr () { return getTimeStr (now ()); }
-
-    /**
-    * Convert a time in UNIX format to a String representing time.
-    * @param[out] String constructed from current time.
-    * @param[in] time_t object to convert to extract time.
-    * TODO: Add internationalization support
-    */
-    String getTimeStr (time_t moment);
-
-    /**
-    * Convert current date to a String.
-    * @param[out] String constructed from current date.
-    * TODO: Add internationalization support
-    */
-    String getDateStr () { return getDateStr (now ()); }
-
-    /**
-    * Convert a time in UNIX format to a String representing its date.
-    * @param[out] String constructed from current date.
-    * @param[in] time_t object to convert to extract date.
-    * TODO: Add internationalization support
-    */
-    String getDateStr (time_t moment);
-
-    /**
-    * Convert current time and date to a String.
-    * @param[out] String constructed from current time.
-    * TODO: Add internationalization support
-    */
-    String getTimeDateString () { return getTimeDateString (now ()); }
-
-    /**
-    * Convert current time and date to a String.
-    * @param[in] time_t object to convert to String.
-    * @param[out] String constructed from current time.
-    * TODO: Add internationalization support
-    */
-    String getTimeDateString (time_t moment);
-
-    /**
     * Gets last successful sync time in UNIX format.
     * @param[out] Last successful sync time. 0 equals never.
     */
@@ -483,6 +441,8 @@ protected:
     */
     //String printDigits(int digits);
 
+    /* helper function. used by dns_found_callback or directly */
+    void async_getTime(const ip_addr_t *);
 
 public:
     /**
@@ -505,7 +465,18 @@ private:
     * @param[out] True if everything went ok.
     */
     //bool sendNTPpacket(IPAddress &address);
-//#endif
+
+#if NETWORK_TYPE == NETWORK_ESP8266 || NETWORK_TYPE == NETWORK_ESP32
+    /**
+     * Internal callback for dns resolution
+    */
+    #if LWIP_VERSION_MAJOR == 2 || defined(ARDUINO_ARCH_ESP32)
+    static void _dns_found_cb(const char *, const ip_addr_t *, void *);
+    #else
+    static void _dns_found_cb(const char *, ip_addr_t *, void *);
+    #endif
+
+#endif // NETWORK_ESP8266/ESP32
 };
 
 extern NTPClient NTP;
