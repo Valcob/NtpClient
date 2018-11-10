@@ -41,7 +41,7 @@ or implied, of German Martin
 //#define DEBUG_NTPCLIENT //Uncomment this to enable debug messages over serial port
 
 #include <TimeLib.h>
-#include <DateStrings.cpp>
+#include <DateStrings.h>
 
 #if defined(ARDUINO) && ARDUINO >= 100
 #include "Arduino.h"
